@@ -24,6 +24,11 @@ export type {
   RunNextOptions,
   RunNextResult,
 } from "./implementer";
+export { InboxDrainer } from "./inbox";
+export type {
+  DrainInboxResult,
+  InboxRequestRouter,
+} from "./inbox";
 export {
   CodexImplementerAgent,
   buildImplementationPrompt,
@@ -51,6 +56,19 @@ export type {
   PullRequestInput,
 } from "./pr";
 export {
+  GitHubCliPullRequestStatusChecker,
+  PrCheckRunner,
+  parsePrLock,
+  parsePullRequestReviewStatus,
+} from "./pr-check";
+export type {
+  PrCheckResult,
+  PrLock,
+  PullRequestReviewState,
+  PullRequestReviewStatus,
+  PullRequestStatusChecker,
+} from "./pr-check";
+export {
   CodexPlannerAgent,
   buildPlannerPrompt,
   parsePlanWritten,
@@ -76,9 +94,10 @@ export {
   MarkdownState,
   findRepoRoot,
   planDirectoryName,
+  parseQueuedRequests,
   quotePrompt,
   slugify,
   timestamp,
   titleFromPrompt,
 } from "./state";
-export type { ActivePlan, PlanPaths } from "./state";
+export type { ActivePlan, PlanPaths, QueuedRequest } from "./state";

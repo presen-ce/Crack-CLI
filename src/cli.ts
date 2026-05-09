@@ -3,6 +3,10 @@
 import { Router } from "./router";
 import { ImplementerRunner } from "./implementer";
 import type { RunNextResult } from "./implementer";
+import { InboxDrainer } from "./inbox";
+import type { DrainInboxResult } from "./inbox";
+import { PrCheckRunner } from "./pr-check";
+import type { PrCheckResult } from "./pr-check";
 import { PullRequestRunner } from "./pr";
 import type { OpenPullRequestResult } from "./pr";
 import { findRepoRoot, MarkdownState } from "./state";
@@ -124,6 +128,21 @@ async function run(argv: string[]): Promise<CommandResult> {
     };
   }
 
+  if (args.command === "pr-check") {
+    const result = await new PrCheckRunner(state).check();
+
+    return { status: 0, message: formatPrCheckResult(result) };
+  }
+
+  if (args.command === "drain") {
+    const result = await new InboxDrainer(state).drain();
+
+    return {
+      status: result.action === "locked" ? 1 : 0,
+      message: formatDrainInboxResult(result),
+    };
+  }
+
   throw new Error(`Unknown command: ${args.command}`);
 }
 
@@ -184,6 +203,8 @@ function helpText(): string {
     "  route <prompt> [--plan <path>] [--branch <name>] [--title <title>] [--reason <text>]",
     "  run-next [--plan <path>]",
     "  open-pr [--plan <path>]",
+    "  pr-check",
+    "  drain",
     "  set-pr-lock --branch <name> --pr-url <url> --reason <text> [--status <status>]",
     "  clear-pr-lock",
     "",
@@ -214,6 +235,33 @@ function formatOpenPullRequestResult(result: OpenPullRequestResult): string {
   }
 
   return `pr_not_ready: ${result.reason}`;
+}
+
+function formatPrCheckResult(result: PrCheckResult): string {
+  if (result.action === "no_lock") {
+    return "pr_check: no active PR lock";
+  }
+
+  if (result.action === "reviewing") {
+    return `pr_check: ${result.prUrl} is ${result.state}; lock kept`;
+  }
+
+  return [
+    `pr_check: ${result.prUrl} merged; lock cleared`,
+    formatDrainInboxResult(result.drain),
+  ].join("\n");
+}
+
+function formatDrainInboxResult(result: DrainInboxResult): string {
+  if (result.action === "empty") {
+    return "drain: inbox empty";
+  }
+
+  if (result.action === "locked") {
+    return `drain: locked with ${result.remaining} request(s) remaining`;
+  }
+
+  return `drain: routed ${result.drained} request(s)`;
 }
 
 if (require.main === module) {

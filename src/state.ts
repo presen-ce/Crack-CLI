@@ -15,6 +15,12 @@ export type ActivePlan = PlanPaths & {
   queueContent: string;
 };
 
+export type QueuedRequest = {
+  prompt: string;
+  reason: string;
+  receivedAt: string;
+};
+
 export function findRepoRoot(start = process.cwd()): string {
   let current = path.resolve(start);
 
@@ -163,6 +169,20 @@ export class MarkdownState {
     return this.inboxPath;
   }
 
+  async readInboxRequests(): Promise<QueuedRequest[]> {
+    await this.initialize();
+    const content = existsSync(this.inboxPath) ? await readFile(this.inboxPath, "utf8") : "";
+
+    return parseQueuedRequests(content);
+  }
+
+  async writeInboxRequests(requests: QueuedRequest[]): Promise<string> {
+    await this.initialize();
+    await writeFile(this.inboxPath, inboxTemplate(requests), "utf8");
+
+    return this.inboxPath;
+  }
+
   async createPlan(options: {
     branchName: string;
     planTitle: string;
@@ -288,6 +308,72 @@ function queuedRequestEntry(prompt: string, reason: string, receivedAt: string):
     reason.trim(),
     "",
   ].join("\n");
+}
+
+export function parseQueuedRequests(content: string): QueuedRequest[] {
+  return content
+    .split(/^## Queued Request\s*$/m)
+    .slice(1)
+    .map(parseQueuedRequestSection)
+    .filter((request): request is QueuedRequest => request !== null);
+}
+
+function parseQueuedRequestSection(section: string): QueuedRequest | null {
+  const lines = section.split(/\r?\n/);
+  const receivedAt = matchLine(section, /^Received:\s*(.+)\s*$/m) ?? "";
+  const promptLabelIndex = lines.findIndex((line) => line.trim() === "User prompt:");
+  const reasonLabelIndex = lines.findIndex((line) => line.trim() === "Reason:");
+
+  if (promptLabelIndex < 0 || reasonLabelIndex < 0 || reasonLabelIndex <= promptLabelIndex) {
+    return null;
+  }
+
+  const prompt = trimOuterEmptyLines(lines.slice(promptLabelIndex + 1, reasonLabelIndex))
+    .map((line) => {
+      if (line === ">") {
+        return "";
+      }
+
+      return line.startsWith("> ") ? line.slice(2) : line;
+    })
+    .join("\n")
+    .trim();
+  const reason = trimOuterEmptyLines(lines.slice(reasonLabelIndex + 1)).join("\n").trim();
+
+  if (!prompt) {
+    return null;
+  }
+
+  return { prompt, reason, receivedAt };
+}
+
+function inboxTemplate(requests: QueuedRequest[]): string {
+  if (requests.length === 0) {
+    return "# Inbox\n\n";
+  }
+
+  return `# Inbox\n\n${requests
+    .map((request) => queuedRequestEntry(request.prompt, request.reason, request.receivedAt))
+    .join("\n")}`;
+}
+
+function matchLine(content: string, pattern: RegExp): string | undefined {
+  return content.match(pattern)?.[1]?.trim();
+}
+
+function trimOuterEmptyLines(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+
+  while (start < end && lines[start].trim() === "") {
+    start += 1;
+  }
+
+  while (end > start && lines[end - 1].trim() === "") {
+    end -= 1;
+  }
+
+  return lines.slice(start, end);
 }
 
 function planTemplate(title: string, branchName: string, prompt: string, reason: string): string {
