@@ -120,6 +120,58 @@ export async function readDashboardSnapshot(
   };
 }
 
+export function renderDashboard(snapshot: DashboardSnapshot): string {
+  const lines = [
+    "Crack Dashboard",
+    `Repo: ${snapshot.repoRoot}`,
+    `State: ${snapshot.initialized ? "initialized" : ".crack not initialized"}`,
+    `PR lock: ${formatPrLock(snapshot.prLock)}`,
+    `Inbox: ${formatCount(snapshot.inbox.count, "request")}`,
+    `Dirty files: ${formatGitStatus(snapshot.git)}`,
+    "",
+    "Plans:",
+  ];
+
+  if (snapshot.plans.length === 0) {
+    const message = snapshot.initialized
+      ? "No active plans."
+      : "No active plans because .crack is not initialized.";
+    lines.push(`  ${message}`);
+  } else {
+    for (const plan of snapshot.plans) {
+      lines.push(
+        `- ${plan.title}`,
+        `  Branch: ${plan.branchName}`,
+        `  Progress: ${plan.commitUnits.completed}/${plan.commitUnits.total} completed`,
+        `  Next: ${formatNextCommitUnit(plan.commitUnits.next)}`,
+        `  Queued requests: ${formatCount(plan.queuedRequestCount, "request")}`,
+        `  Suggested command: ${formatSuggestedCommand(plan)}`,
+      );
+    }
+  }
+
+  lines.push("", "Recent activity:");
+
+  if (snapshot.plans.length === 0) {
+    lines.push("  No recent activity.");
+  } else {
+    for (const plan of snapshot.plans) {
+      lines.push(`- ${plan.title}`);
+
+      if (plan.recentLogEntries.length === 0) {
+        lines.push("  No recent activity.");
+        continue;
+      }
+
+      for (const entry of plan.recentLogEntries.slice(-3)) {
+        lines.push(`  - ${formatLogEntry(entry)}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function readRequestQueue(queuePath: string): Promise<DashboardRequestQueueSummary> {
   const content = await readTextIfExists(queuePath);
   const requests = parseQueuedRequests(content);
@@ -338,4 +390,55 @@ function shellQuote(value: string): string {
   }
 
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function formatPrLock(lock: DashboardPrLockSummary | null): string {
+  if (!lock) {
+    return "none";
+  }
+
+  if (!lock.valid) {
+    return `invalid (${lock.path})`;
+  }
+
+  const parts = [`branch ${lock.branchName}`];
+  if (lock.status) {
+    parts.push(`status ${lock.status}`);
+  }
+  parts.push(lock.prUrl);
+
+  return `active - ${parts.join(", ")}`;
+}
+
+function formatGitStatus(git: DashboardGitStatusSummary): string {
+  if (!git.isDirty) {
+    return "0";
+  }
+
+  return [
+    `${git.changedFileCount}`,
+    `(staged ${git.stagedFileCount}, unstaged ${git.unstagedFileCount}, untracked ${git.untrackedFileCount})`,
+  ].join(" ");
+}
+
+function formatNextCommitUnit(unit: DashboardCommitUnitSummary | null): string {
+  if (!unit) {
+    return "none";
+  }
+
+  return `Commit ${unit.number} - ${unit.title}`;
+}
+
+function formatSuggestedCommand(plan: DashboardPlanSummary): string {
+  return plan.nextCommands.find((command) => command.kind === "run-all")?.command
+    ?? plan.nextCommands[0]?.command
+    ?? "none";
+}
+
+function formatLogEntry(entry: DashboardLogEntry): string {
+  return entry.loggedAt ? `[${entry.loggedAt}] ${entry.text}` : entry.text;
+}
+
+function formatCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
 }

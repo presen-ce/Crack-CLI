@@ -5,8 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { readDashboardSnapshot } from "../src/dashboard";
-import type { GitStatusReader } from "../src/dashboard";
+import { readDashboardSnapshot, renderDashboard } from "../src/dashboard";
+import type { DashboardSnapshot, GitStatusReader } from "../src/dashboard";
 import { parseGitStatus } from "../src/git";
 import type { GitStatusSnapshot } from "../src/git";
 import { MarkdownState } from "../src/state";
@@ -143,6 +143,42 @@ test("readDashboardSnapshot does not initialize missing crack state", async () =
   });
 });
 
+test("renderDashboard renders a compact summary with suggested run-all command", () => {
+  const output = renderDashboard(sampleDashboardSnapshot());
+
+  assert.match(output, /Crack Dashboard/);
+  assert.match(output, /Repo: \/repo\/demo/);
+  assert.match(output, /PR lock: active - branch codex\/demo, status reviewing, https:\/\/github\.com\/example\/repo\/pull\/7/);
+  assert.match(output, /Inbox: 2 requests/);
+  assert.match(output, /Dirty files: 3 \(staged 1, unstaged 1, untracked 1\)/);
+  assert.match(output, /Plans:/);
+  assert.match(output, /- Demo Dashboard/);
+  assert.match(output, /Progress: 1\/3 completed/);
+  assert.match(output, /Next: Commit 2 - Render dashboard/);
+  assert.match(output, /Queued requests: 1 request/);
+  assert.match(output, /Suggested command: crack run-all --plan \.crack\/plans\/demo\/plan\.md/);
+  assert.match(output, /Recent activity:/);
+  assert.match(output, /\[2026-05-09 12:20\] Completed commit unit 1\./);
+  assert.doesNotMatch(output, /\u001b\[/);
+});
+
+test("renderDashboard shows clear empty states", () => {
+  const uninitialized = renderDashboard(sampleDashboardSnapshot({
+    initialized: false,
+    plans: [],
+  }));
+  assert.match(uninitialized, /State: \.crack not initialized/);
+  assert.match(uninitialized, /No active plans because \.crack is not initialized\./);
+  assert.match(uninitialized, /No recent activity\./);
+
+  const initialized = renderDashboard(sampleDashboardSnapshot({
+    initialized: true,
+    plans: [],
+  }));
+  assert.match(initialized, /State: initialized/);
+  assert.match(initialized, /No active plans\./);
+});
+
 async function withRepo(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "crack-"));
 
@@ -177,4 +213,78 @@ class StubGitStatusReader implements GitStatusReader {
   async status(): Promise<GitStatusSnapshot> {
     return this.snapshot;
   }
+}
+
+function sampleDashboardSnapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot {
+  return {
+    repoRoot: "/repo/demo",
+    crackDir: "/repo/demo/.crack",
+    initialized: true,
+    inbox: {
+      path: "/repo/demo/.crack/inbox.md",
+      count: 2,
+      requests: [],
+    },
+    prLock: {
+      path: "/repo/demo/.crack/pr-lock.md",
+      raw: "",
+      valid: true,
+      branchName: "codex/demo",
+      prUrl: "https://github.com/example/repo/pull/7",
+      status: "reviewing",
+    },
+    plans: [
+      {
+        directory: "/repo/demo/.crack/plans/demo",
+        planPath: "/repo/demo/.crack/plans/demo/plan.md",
+        queuePath: "/repo/demo/.crack/plans/demo/queue.md",
+        logPath: "/repo/demo/.crack/plans/demo/log.md",
+        relativeDirectory: ".crack/plans/demo",
+        relativePlanPath: ".crack/plans/demo/plan.md",
+        branchName: "codex/demo",
+        title: "Demo Dashboard",
+        commitUnits: {
+          total: 3,
+          completed: 1,
+          remaining: 2,
+          completedNumbers: [1],
+          next: {
+            number: 2,
+            title: "Render dashboard",
+          },
+        },
+        queuedRequestCount: 1,
+        recentLogEntries: [
+          {
+            loggedAt: "2026-05-09 12:15",
+            text: "Started commit unit 1.",
+          },
+          {
+            loggedAt: "2026-05-09 12:20",
+            text: "Completed commit unit 1.",
+          },
+        ],
+        nextCommands: [
+          {
+            kind: "run-next",
+            command: "crack run-next --plan .crack/plans/demo/plan.md",
+          },
+          {
+            kind: "run-all",
+            command: "crack run-all --plan .crack/plans/demo/plan.md",
+          },
+        ],
+      },
+    ],
+    git: {
+      raw: "",
+      entries: [],
+      isDirty: true,
+      changedFileCount: 3,
+      stagedFileCount: 1,
+      unstagedFileCount: 1,
+      untrackedFileCount: 1,
+    },
+    ...overrides,
+  };
 }
