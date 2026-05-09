@@ -47,6 +47,14 @@ class PlanPaths:
     log: Path
 
 
+@dataclass(frozen=True)
+class ActivePlan:
+    paths: PlanPaths
+    branch_name: str
+    plan_markdown: str
+    queue_markdown: str
+
+
 class MarkdownState:
     def __init__(self, repo_root: Path | str | None = None) -> None:
         self.repo_root = Path(repo_root).resolve() if repo_root else find_repo_root()
@@ -85,6 +93,30 @@ class MarkdownState:
             queue=directory / "queue.md",
             log=directory / "log.md",
         )
+
+    def scan_active_plans(self) -> list[ActivePlan]:
+        self.initialize()
+        plans: list[ActivePlan] = []
+        if not self.plans_dir.exists():
+            return plans
+
+        for directory in sorted(path for path in self.plans_dir.iterdir() if path.is_dir()):
+            paths = self.existing_plan_paths(directory)
+            if not paths.plan.exists():
+                continue
+
+            plan_markdown = paths.plan.read_text(encoding="utf-8")
+            queue_markdown = paths.queue.read_text(encoding="utf-8") if paths.queue.exists() else ""
+            plans.append(
+                ActivePlan(
+                    paths=paths,
+                    branch_name=branch_from_plan(plan_markdown, directory.name),
+                    plan_markdown=plan_markdown,
+                    queue_markdown=queue_markdown,
+                )
+            )
+
+        return plans
 
     def append_inbox(
         self,
@@ -205,3 +237,10 @@ class MarkdownState:
             return False
         self.pr_lock_path.unlink()
         return True
+
+
+def branch_from_plan(markdown: str, fallback: str) -> str:
+    match = re.search(r"^Branch:\s*(.+?)\s*$", markdown, flags=re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    return fallback
