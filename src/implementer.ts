@@ -32,6 +32,12 @@ export type RunNextResult =
       reason: string;
     }
   | {
+      action: "skipped";
+      planPath: string;
+      unitNumber: number;
+      message: string;
+    }
+  | {
       action: "committed";
       planPath: string;
       unitNumber: number;
@@ -119,21 +125,23 @@ export class ImplementerRunner {
     const pathsToCommit = changedPathsSince(beforeStatus, afterStatus);
 
     if (pathsToCommit.length === 0) {
-      const reason = "No new git changes were produced.";
+      const message = "No new git changes were produced.";
       await this.state.appendPlanLog(
         selectedPlan.paths,
         [
           `Codex session: ${implementation.sessionId}.`,
-          `Commit unit ${unit.number} was ready, but ${reason}`,
+          `Review summary: ${implementation.review.summary}`,
+          `Skipped commit unit ${unit.number}: ${message}`,
+          `Completed commit unit ${unit.number}.`,
         ],
         options.receivedAt,
       );
 
       return {
-        action: "needs_work",
+        action: "skipped",
         planPath: selectedPlan.paths.plan,
         unitNumber: unit.number,
-        reason,
+        message,
       };
     }
 

@@ -129,6 +129,47 @@ test("runAll stops when a commit unit needs work", async () => {
   });
 });
 
+test("runAll continues when a commit unit produces no git changes", async () => {
+  await withRepo(async (root) => {
+    const state = new MarkdownState(root);
+    const planPath = path.join(root, ".crack", "plans", "demo", "plan.md");
+    const implementer = new StubNextUnitRunner([
+      {
+        action: "skipped",
+        planPath,
+        unitNumber: 1,
+        message: "No new git changes were produced.",
+      },
+      {
+        action: "committed",
+        planPath,
+        unitNumber: 2,
+        commitHash: "bbb222",
+        message: "Second unit",
+      },
+      {
+        action: "complete",
+        planPath,
+        message: "No remaining commit units.",
+      },
+    ]);
+    const pullRequests = new StubPullRequestOpener({
+      action: "local_branch",
+      planPath,
+      branchName: "codex/demo",
+      reason: "Plan is complete on a local branch; remote PR was not opened.",
+    });
+
+    const result = await new RunAllRunner(state, implementer, pullRequests).runAll({
+      planPath,
+    });
+
+    assert.equal(result.action, "local_branch");
+    assert.equal(implementer.calls.length, 3);
+    assert.equal(pullRequests.calls.length, 1);
+  });
+});
+
 async function withRepo(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "crack-"));
 

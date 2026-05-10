@@ -69,7 +69,7 @@ export class RunAllRunner {
       steps.push(result);
       planPath = result.planPath;
 
-      if (result.action === "committed") {
+      if (result.action === "committed" || result.action === "skipped") {
         continue;
       }
 

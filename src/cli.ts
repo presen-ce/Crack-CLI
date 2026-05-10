@@ -98,7 +98,7 @@ async function run(argv: string[]): Promise<CommandResult> {
       planPath: stringFlag(args, "plan"),
     });
 
-    if (result.action === "committed") {
+    if (result.action === "committed" || result.action === "skipped") {
       const pullRequest = await new PullRequestRunner(state).openWhenReady({
         planPath: result.planPath,
         branchMode,
@@ -302,6 +302,10 @@ function formatRunNextResult(result: RunNextResult): string {
 
   if (result.action === "complete") {
     return `complete: ${result.message}`;
+  }
+
+  if (result.action === "skipped") {
+    return `skipped unit ${result.unitNumber}: ${result.message}`;
   }
 
   return `needs_work unit ${result.unitNumber}: ${result.reason}`;

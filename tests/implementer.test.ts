@@ -216,6 +216,46 @@ test("runNext does not commit when review needs more work", async () => {
   });
 });
 
+test("runNext skips a ready unit when no git changes are produced", async () => {
+  await withRepo(async (root) => {
+    const state = new MarkdownState(root);
+    const plan = await state.createPlan({
+      branchName: "codex/current",
+      planTitle: "Current",
+      prompt: "Initial request",
+      reason: "test setup",
+    });
+    await writePlan(plan.plan);
+
+    const agent = new StubImplementerAgent({
+      sessionId: "session-1",
+      implementationMessage: "implemented",
+      reviewMessage: 'COMMIT_UNIT_READY title="Add model" summary="Already implemented."',
+      review: {
+        status: "ready",
+        title: "Add model",
+        summary: "Already implemented.",
+      },
+    });
+    const committer = new StubCommitter([
+      parseGitStatus(""),
+      parseGitStatus(" M .crack/plans/current/log.md\n"),
+      parseGitStatus(" M .crack/plans/current/log.md\n"),
+    ]);
+
+    const result = await new ImplementerRunner(state, agent, committer).runNext({
+      planPath: plan.plan,
+    });
+
+    assert.equal(result.action, "skipped");
+    assert.equal(committer.commits.length, 0);
+
+    const log = await readFile(plan.log, "utf8");
+    assert.match(log, /Skipped commit unit 1: No new git changes were produced\./);
+    assert.match(log, /Completed commit unit 1\./);
+  });
+});
+
 async function withRepo(run: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "crack-"));
 
