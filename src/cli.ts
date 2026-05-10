@@ -10,6 +10,14 @@ import type { PrCheckResult } from "./pr-check";
 import { PullRequestRunner } from "./pr";
 import type { OpenPullRequestResult } from "./pr";
 import { findRepoRoot, MarkdownState } from "./state";
+import { RunAllRunner } from "./run-all";
+import type { RunAllResult } from "./run-all";
+import {
+  parseDashboardWatchInterval,
+  readDashboardSnapshot,
+  renderDashboard,
+  watchDashboard,
+} from "./dashboard";
 
 type CommandResult = {
   status: number;
@@ -117,6 +125,32 @@ async function run(argv: string[]): Promise<CommandResult> {
     return { status: result.action === "needs_work" ? 1 : 0, message: formatRunNextResult(result) };
   }
 
+  if (args.command === "run-all") {
+    const result = await new RunAllRunner(state).runAll({
+      planPath: stringFlag(args, "plan"),
+    });
+
+    return {
+      status: result.action === "opened" ? 0 : 1,
+      message: formatRunAllResult(result),
+    };
+  }
+
+  if (args.command === "dashboard") {
+    if (args.flags.has("watch")) {
+      await watchDashboard(state, {
+        intervalSeconds: parseDashboardWatchInterval(args.flags.get("interval")),
+      });
+    }
+
+    if (args.flags.has("interval")) {
+      throw new Error("--interval can only be used with --watch");
+    }
+
+    const snapshot = await readDashboardSnapshot(state);
+    return { status: 0, message: renderDashboard(snapshot) };
+  }
+
   if (args.command === "open-pr") {
     const result = await new PullRequestRunner(state).openWhenReady({
       planPath: stringFlag(args, "plan"),
@@ -167,7 +201,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     const flag = token.replace(/^-+/, "");
     const next = argv[index + 1];
 
-    if (!next || next.startsWith("-")) {
+    if (!next || !isFlagValue(next)) {
       flags.set(flag, true);
       continue;
     }
@@ -177,6 +211,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return { command, values, flags };
+}
+
+function isFlagValue(value: string): boolean {
+  return !value.startsWith("-") || /^-\d/.test(value);
 }
 
 function stringFlag(args: ParsedArgs, name: string): string | undefined {
@@ -202,6 +240,8 @@ function helpText(): string {
     "  submit <prompt> [--plan <path>] [--branch <name>] [--title <title>] [--reason <text>]",
     "  route <prompt> [--plan <path>] [--branch <name>] [--title <title>] [--reason <text>]",
     "  run-next [--plan <path>]",
+    "  run-all [--plan <path>]",
+    "  dashboard [--root <path>] [--watch] [--interval <seconds>]",
     "  open-pr [--plan <path>]",
     "  pr-check",
     "  drain",
@@ -223,6 +263,18 @@ function formatRunNextResult(result: RunNextResult): string {
   }
 
   return `needs_work unit ${result.unitNumber}: ${result.reason}`;
+}
+
+function formatRunAllResult(result: RunAllResult): string {
+  const messages = result.steps
+    .filter((step) => step.action !== "complete")
+    .map(formatRunNextResult);
+
+  if ("pullRequest" in result) {
+    messages.push(formatOpenPullRequestResult(result.pullRequest));
+  }
+
+  return messages.join("\n");
 }
 
 function formatOpenPullRequestResult(result: OpenPullRequestResult): string {
