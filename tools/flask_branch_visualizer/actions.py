@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -9,7 +10,9 @@ from typing import Any
 
 PLAN_ACTIONS = {"run-next", "run-all", "open-pr"}
 REPOSITORY_ACTIONS = {"pr-check", "drain"}
-SUPPORTED_ACTIONS = PLAN_ACTIONS | REPOSITORY_ACTIONS
+SUBMIT_ACTION = "submit"
+SUBMIT_FIELDS = {"prompt", "plan_path", "planPath", "branch", "title", "reason"}
+SUPPORTED_ACTIONS = PLAN_ACTIONS | REPOSITORY_ACTIONS | {SUBMIT_ACTION}
 
 
 class ActionError(ValueError):
@@ -41,9 +44,14 @@ class ActionResult:
         }
 
 
-def run_action(action: object, repo_root: str | Path, plan_path: object = None) -> ActionResult:
+def run_action(
+    action: object,
+    repo_root: str | Path,
+    plan_path: object = None,
+    submit_options: Mapping[str, object] | None = None,
+) -> ActionResult:
     root = Path(repo_root).resolve()
-    command = build_action_command(action, root, plan_path)
+    command = build_action_command(action, root, plan_path, submit_options)
 
     try:
         completed = subprocess.run(
@@ -73,15 +81,26 @@ def run_action(action: object, repo_root: str | Path, plan_path: object = None) 
     )
 
 
-def build_action_command(action: object, repo_root: str | Path, plan_path: object = None) -> ActionCommand:
+def build_action_command(
+    action: object,
+    repo_root: str | Path,
+    plan_path: object = None,
+    submit_options: Mapping[str, object] | None = None,
+) -> ActionCommand:
     root = Path(repo_root).resolve()
     action_name = clean_action_name(action)
     argv = resolve_crack_command(root)
 
-    if action_name in PLAN_ACTIONS:
+    if action_name == SUBMIT_ACTION:
+        argv.extend(build_submit_args(root, plan_path, submit_options))
+    elif action_name in PLAN_ACTIONS:
+        if submit_options:
+            raise ActionError(f"Action {action_name!r} does not accept submit metadata.")
         relative_plan_path = validate_plan_path(root, plan_path)
         argv.extend([action_name, "--plan", relative_plan_path])
     else:
+        if submit_options:
+            raise ActionError(f"Action {action_name!r} does not accept submit metadata.")
         if plan_path is not None and plan_path != "":
             raise ActionError(f"Action {action_name!r} does not accept a plan path.")
         argv.append(action_name)
@@ -98,6 +117,68 @@ def clean_action_name(action: object) -> str:
         raise ActionError(f"Unsupported action: {action_name}.")
 
     return action_name
+
+
+def build_submit_args(
+    repo_root: str | Path,
+    plan_path: object = None,
+    submit_options: Mapping[str, object] | None = None,
+) -> list[str]:
+    if submit_options is None:
+        submit_options = {}
+
+    if not isinstance(submit_options, Mapping):
+        raise ActionError("Submit metadata must be an object.")
+
+    unsupported_fields = sorted(set(submit_options) - SUBMIT_FIELDS)
+    if unsupported_fields:
+        fields = ", ".join(unsupported_fields)
+        label = "field" if len(unsupported_fields) == 1 else "fields"
+        raise ActionError(f"Unsupported submit {label}: {fields}.")
+
+    prompt = clean_submit_text("prompt", submit_options.get("prompt"), required=True)
+    argv = ["submit", prompt]
+
+    submit_plan_path = first_present_value(
+        plan_path,
+        submit_options.get("plan_path"),
+        submit_options.get("planPath"),
+    )
+    if submit_plan_path is not None:
+        argv.extend(["--plan", validate_plan_path(repo_root, submit_plan_path)])
+
+    for field_name in ["branch", "title", "reason"]:
+        value = clean_submit_text(field_name, submit_options.get(field_name), required=False)
+        if value:
+            argv.extend([f"--{field_name}", value])
+
+    return argv
+
+
+def clean_submit_text(field_name: str, value: object, *, required: bool) -> str:
+    if not isinstance(value, str):
+        if required:
+            raise ActionError("Submit action requires a non-empty prompt.")
+        if value is None:
+            return ""
+        raise ActionError(f"Submit field {field_name!r} must be a string.")
+
+    cleaned = value.strip()
+    if required and not cleaned:
+        raise ActionError("Submit action requires a non-empty prompt.")
+
+    return cleaned
+
+
+def first_present_value(*values: object) -> object:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+
+    return None
 
 
 def resolve_crack_command(repo_root: str | Path) -> list[str]:

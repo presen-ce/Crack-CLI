@@ -41,6 +41,61 @@ class ActionRunnerTest(unittest.TestCase):
                     self.assertEqual(command.argv, ["crack", action])
                     self.assertEqual(command.display, f"crack {action}")
 
+    def test_builds_submit_command_with_prompt_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = make_repo(Path(temp_dir))
+
+            command = build_action_command(
+                "submit",
+                root,
+                submit_options={
+                    "prompt": "Add live actions",
+                    "planPath": ".crack/plans/demo/plan.md",
+                    "branch": "codex/live-actions",
+                    "title": "Live Actions",
+                    "reason": "Follow-up request",
+                },
+            )
+
+            self.assertEqual(
+                command.argv,
+                [
+                    "crack",
+                    "submit",
+                    "Add live actions",
+                    "--plan",
+                    ".crack/plans/demo/plan.md",
+                    "--branch",
+                    "codex/live-actions",
+                    "--title",
+                    "Live Actions",
+                    "--reason",
+                    "Follow-up request",
+                ],
+            )
+
+    def test_submit_accepts_plan_path_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = make_repo(Path(temp_dir))
+
+            command = build_action_command(
+                "submit",
+                root,
+                ".crack/plans/demo/plan.md",
+                {"prompt": "Queue this on the selected plan"},
+            )
+
+            self.assertEqual(
+                command.argv,
+                [
+                    "crack",
+                    "submit",
+                    "Queue this on the selected plan",
+                    "--plan",
+                    ".crack/plans/demo/plan.md",
+                ],
+            )
+
     def test_plan_path_validation_only_accepts_plan_files_under_crack_plans(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = make_repo(Path(temp_dir))
@@ -75,6 +130,23 @@ class ActionRunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(ActionError, "does not accept a plan path"):
                 build_action_command("drain", root, ".crack/plans/demo/plan.md")
 
+    def test_submit_validates_prompt_metadata_and_plan_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = make_repo(Path(temp_dir))
+
+            cases = [
+                ({}, "non-empty prompt"),
+                ({"prompt": "   "}, "non-empty prompt"),
+                ({"prompt": "ok", "unexpected": "value"}, "Unsupported submit field"),
+                ({"prompt": "ok", "plan_path": "plan.md"}, "under .crack/plans"),
+                ({"prompt": "ok", "branch": 123}, "must be a string"),
+            ]
+
+            for submit_options, message in cases:
+                with self.subTest(submit_options=submit_options):
+                    with self.assertRaisesRegex(ActionError, message):
+                        build_action_command("submit", root, submit_options=submit_options)
+
     def test_run_action_returns_subprocess_output_without_raising_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = make_repo(Path(temp_dir))
@@ -95,6 +167,33 @@ class ActionRunnerTest(unittest.TestCase):
             self.assertEqual(result.stderr, "command error\n")
             run.assert_called_once_with(
                 ["crack", "run-all", "--plan", ".crack/plans/demo/plan.md"],
+                cwd=str(root.resolve()),
+                shell=False,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+    def test_run_action_uses_shell_false_for_submit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = make_repo(Path(temp_dir))
+            completed = subprocess.CompletedProcess(
+                args=["crack", "submit"],
+                returncode=0,
+                stdout="submitted\n",
+                stderr="",
+            )
+
+            with patch("tools.flask_branch_visualizer.actions.subprocess.run", return_value=completed) as run:
+                result = run_action("submit", root, submit_options={"prompt": "Add live actions"})
+
+            self.assertEqual(result.action, "submit")
+            self.assertEqual(result.command, "crack submit 'Add live actions'")
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.stdout, "submitted\n")
+            run.assert_called_once_with(
+                ["crack", "submit", "Add live actions"],
                 cwd=str(root.resolve()),
                 shell=False,
                 check=False,

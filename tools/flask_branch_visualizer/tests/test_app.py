@@ -156,6 +156,54 @@ class FlaskAppTest(unittest.TestCase):
             run.assert_called_once_with("run-next", str(root), ".crack/plans/demo/plan.md")
             read_snapshot.assert_called_once_with(str(root), 5)
 
+    def test_api_actions_accepts_submit_json_and_returns_refreshed_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            snapshot = sample_snapshot(root)
+            result = ActionResult(
+                action="submit",
+                command=(
+                    "crack submit 'Add live actions' --plan .crack/plans/demo/plan.md "
+                    "--branch codex/live-actions --title 'Live Actions' --reason 'Follow-up request'"
+                ),
+                exit_code=0,
+                stdout="submitted\n",
+                stderr="",
+            )
+            payload = {
+                "action": "submit",
+                "prompt": "Add live actions",
+                "planPath": ".crack/plans/demo/plan.md",
+                "branch": "codex/live-actions",
+                "title": "Live Actions",
+                "reason": "Follow-up request",
+            }
+
+            with (
+                patch("tools.flask_branch_visualizer.app.run_action", return_value=result) as run,
+                patch("tools.flask_branch_visualizer.app.read_repository_snapshot", return_value=snapshot) as read_snapshot,
+            ):
+                app = create_app(root, max_commits=5)
+                response = app.test_client().post("/api/actions", json=payload)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.is_json)
+            self.assertEqual(response.get_json()["action"], "submit")
+            self.assertEqual(response.get_json()["snapshot"], snapshot)
+            run.assert_called_once_with(
+                "submit",
+                str(root),
+                ".crack/plans/demo/plan.md",
+                {
+                    "prompt": "Add live actions",
+                    "planPath": ".crack/plans/demo/plan.md",
+                    "branch": "codex/live-actions",
+                    "title": "Live Actions",
+                    "reason": "Follow-up request",
+                },
+            )
+            read_snapshot.assert_called_once_with(str(root), 5)
+
     def test_api_actions_rejects_invalid_requests_without_running_snapshot_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir).resolve()

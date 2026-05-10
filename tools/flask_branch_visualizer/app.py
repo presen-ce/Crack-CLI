@@ -836,9 +836,18 @@ def create_app(repo_path: str | Path | None = None, max_commits: int = DEFAULT_W
         plan_path = payload.get("plan_path")
         if plan_path is None:
             plan_path = payload.get("planPath")
+        action = payload.get("action") or payload.get("name")
+        submit_options = None
+        if isinstance(action, str) and action.strip() == "submit":
+            submit_options = {
+                key: value for key, value in payload.items() if key not in {"action", "name"}
+            }
 
         try:
-            result = run_action(payload.get("action") or payload.get("name"), repo_root, plan_path)
+            if submit_options is None:
+                result = run_action(action, repo_root, plan_path)
+            else:
+                result = run_action(action, repo_root, plan_path, submit_options)
         except ActionError as error:
             return jsonify({"error": str(error)}), 400
 
