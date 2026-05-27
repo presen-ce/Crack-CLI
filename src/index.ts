@@ -128,6 +128,14 @@ export type {
   PlannerAgentInput,
   PlannerAgentResult,
 } from "./planner-agent";
+export { summarizePlanStatus } from "./plan-status";
+export type {
+  PlanCommitUnitSummary,
+  PlanProgressSummary,
+  PlanRoutingSummary,
+  PlanStatus,
+  PlanStatusSummary,
+} from "./plan-status";
 export {
   CodexRouterAgent,
   buildRouterPrompt,
@@ -138,6 +146,7 @@ export type {
   RouterAgent,
   RouterAgentDecision,
   RouterAgentInput,
+  RouterPlanDiagnostic,
 } from "./router-agent";
 export {
   MarkdownState,
@@ -149,4 +158,4 @@ export {
   timestamp,
   titleFromPrompt,
 } from "./state";
-export type { ActivePlan, PlanPaths, QueuedRequest } from "./state";
+export type { ActivePlan, PlanPaths, PlanRecord, QueuedRequest } from "./state";

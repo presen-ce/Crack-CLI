@@ -1,14 +1,13 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { GitStatusEntry, GitStatusSnapshot } from "./git";
 import { GitCliCommitter } from "./git";
-import { completedCommitUnitNumbers, parseCommitUnits } from "./implementer";
-import type { CommitUnit } from "./implementer";
+import type { PlanStatus } from "./plan-status";
 import { parsePrLock } from "./pr-check";
 import type { PrLock } from "./pr-check";
-import type { MarkdownState, QueuedRequest } from "./state";
+import type { MarkdownState, PlanRecord, QueuedRequest } from "./state";
 import { parseQueuedRequests } from "./state";
 
 export type DashboardSnapshot = {
@@ -18,6 +17,8 @@ export type DashboardSnapshot = {
   inbox: DashboardRequestQueueSummary;
   prLock: DashboardPrLockSummary | null;
   plans: DashboardPlanSummary[];
+  activePlans: DashboardPlanSummary[];
+  completePlans: DashboardPlanSummary[];
   git: DashboardGitStatusSummary;
 };
 
@@ -30,6 +31,9 @@ export type DashboardPlanSummary = {
   relativePlanPath: string;
   branchName: string;
   title: string;
+  status: PlanStatus;
+  statusReason: string;
+  routingExclusionReason?: string;
   commitUnits: DashboardCommitUnitProgress;
   queuedRequestCount: number;
   recentLogEntries: DashboardLogEntry[];
@@ -121,6 +125,9 @@ export async function readDashboardSnapshot(
     (options.gitStatusReader ?? new GitCliCommitter(state.repoRoot)).status(),
   ]);
 
+  const activePlans = plans.filter((plan) => plan.status === "active");
+  const completePlans = plans.filter((plan) => plan.status === "complete");
+
   return {
     repoRoot: state.repoRoot,
     crackDir: state.crackDir,
@@ -128,6 +135,8 @@ export async function readDashboardSnapshot(
     inbox,
     prLock,
     plans,
+    activePlans,
+    completePlans,
     git: summarizeGitStatus(gitStatus),
   };
 }
@@ -196,24 +205,27 @@ export function renderDashboard(snapshot: DashboardSnapshot): string {
     `Inbox: ${formatCount(snapshot.inbox.count, "request")}`,
     `Dirty files: ${formatGitStatus(snapshot.git)}`,
     "",
-    "Plans:",
+    "Active plans:",
   ];
 
-  if (snapshot.plans.length === 0) {
+  if (snapshot.activePlans.length === 0) {
     const message = snapshot.initialized
       ? "No active plans."
       : "No active plans because .crack is not initialized.";
     lines.push(`  ${message}`);
   } else {
-    for (const plan of snapshot.plans) {
-      lines.push(
-        `- ${plan.title}`,
-        `  Branch: ${plan.branchName}`,
-        `  Progress: ${plan.commitUnits.completed}/${plan.commitUnits.total} completed`,
-        `  Next: ${formatNextCommitUnit(plan.commitUnits.next)}`,
-        `  Queued requests: ${formatCount(plan.queuedRequestCount, "request")}`,
-        `  Suggested command: ${formatSuggestedCommand(plan)}`,
-      );
+    for (const plan of snapshot.activePlans) {
+      lines.push(...formatPlanSummary(plan, { includeSuggestedCommand: true }));
+    }
+  }
+
+  lines.push("", "Complete plans:");
+
+  if (snapshot.completePlans.length === 0) {
+    lines.push("  No complete plans.");
+  } else {
+    for (const plan of snapshot.completePlans) {
+      lines.push(...formatPlanSummary(plan, { includeRoutingExclusion: true }));
     }
   }
 
@@ -274,87 +286,36 @@ async function readPrLock(lockPath: string): Promise<DashboardPrLockSummary | nu
 }
 
 async function readPlans(state: MarkdownState): Promise<DashboardPlanSummary[]> {
-  if (!existsSync(state.plansDir)) {
-    return [];
-  }
-
-  const entries = await readdir(state.plansDir, { withFileTypes: true });
-  const plans = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry) => {
-        const directory = path.join(state.plansDir, entry.name);
-        const planPath = path.join(directory, "plan.md");
-
-        if (!existsSync(planPath)) {
-          return null;
-        }
-
-        const queuePath = path.join(directory, "queue.md");
-        const logPath = path.join(directory, "log.md");
-        const [planContent, queueContent, logContent] = await Promise.all([
-          readFile(planPath, "utf8"),
-          readTextIfExists(queuePath),
-          readTextIfExists(logPath),
-        ]);
-
-        return summarizePlan({
-          repoRoot: state.repoRoot,
-          directory,
-          planPath,
-          queuePath,
-          logPath,
-          planContent,
-          queueContent,
-          logContent,
-          fallbackBranchName: entry.name,
-        });
-      }),
-  );
-
-  return plans
-    .filter((plan): plan is DashboardPlanSummary => plan !== null)
-    .sort((left, right) => left.directory.localeCompare(right.directory));
+  const plans = await state.listPlanRecords({ initialize: false });
+  return plans.map((plan) => summarizePlan(state.repoRoot, plan));
 }
 
-function summarizePlan(input: {
-  repoRoot: string;
-  directory: string;
-  planPath: string;
-  queuePath: string;
-  logPath: string;
-  planContent: string;
-  queueContent: string;
-  logContent: string;
-  fallbackBranchName: string;
-}): DashboardPlanSummary {
-  const units = parseCommitUnits(input.planContent);
-  const completed = completedCommitUnitNumbers(input.logContent);
-  const remainingUnits = units.filter((unit) => !completed.has(unit.number));
-  const completedNumbers = units
-    .filter((unit) => completed.has(unit.number))
-    .map((unit) => unit.number);
-  const relativePlanPath = relativePath(input.repoRoot, input.planPath);
+function summarizePlan(repoRoot: string, plan: PlanRecord): DashboardPlanSummary {
+  const relativePlanPath = relativePath(repoRoot, plan.plan);
+  const progress = plan.statusSummary.progress;
 
   return {
-    directory: input.directory,
-    planPath: input.planPath,
-    queuePath: input.queuePath,
-    logPath: input.logPath,
-    relativeDirectory: relativePath(input.repoRoot, input.directory),
+    directory: plan.directory,
+    planPath: plan.plan,
+    queuePath: plan.queue,
+    logPath: plan.log,
+    relativeDirectory: relativePath(repoRoot, plan.directory),
     relativePlanPath,
-    branchName: branchNameFromPlan(input.planContent) ?? input.fallbackBranchName,
-    title: titleFromPlan(input.planContent) ?? input.fallbackBranchName,
+    branchName: plan.branchName,
+    title: titleFromPlan(plan.planContent) ?? path.basename(plan.directory),
+    status: plan.status,
+    statusReason: plan.statusSummary.reason,
+    routingExclusionReason: plan.statusSummary.routing.exclusionReason,
     commitUnits: {
-      total: units.length,
-      completed: completedNumbers.length,
-      remaining: remainingUnits.length,
-      completedNumbers,
-      next: remainingUnits[0] ? commitUnitSummary(remainingUnits[0]) : null,
+      total: progress.total,
+      completed: progress.completed,
+      remaining: progress.remaining,
+      completedNumbers: progress.completedNumbers,
+      next: progress.next,
     },
-    queuedRequestCount: parseQueuedRequests(input.queueContent).length,
-    recentLogEntries: recentLogEntries(input.logContent),
-    nextCommands: remainingUnits.length > 0 ? nextCommands(relativePlanPath) : [],
+    queuedRequestCount: parseQueuedRequests(plan.queueContent).length,
+    recentLogEntries: recentLogEntries(plan.logContent),
+    nextCommands: progress.remaining > 0 ? nextCommands(relativePlanPath) : [],
   };
 }
 
@@ -397,13 +358,6 @@ async function readTextIfExists(filePath: string): Promise<string> {
   return readFile(filePath, "utf8");
 }
 
-function commitUnitSummary(unit: CommitUnit): DashboardCommitUnitSummary {
-  return {
-    number: unit.number,
-    title: unit.title,
-  };
-}
-
 function nextCommands(planPath: string): DashboardNextCommand[] {
   const planArg = shellQuote(planPath);
 
@@ -437,10 +391,6 @@ function recentLogEntries(logContent: string, limit = 3): DashboardLogEntry[] {
   }
 
   return entries.slice(-limit);
-}
-
-function branchNameFromPlan(content: string): string | undefined {
-  return content.match(/^Branch:\s*(.+)\s*$/m)?.[1]?.trim() || undefined;
 }
 
 function titleFromPlan(content: string): string | undefined {
@@ -500,6 +450,29 @@ function formatSuggestedCommand(plan: DashboardPlanSummary): string {
   return plan.nextCommands.find((command) => command.kind === "run-all")?.command
     ?? plan.nextCommands[0]?.command
     ?? "none";
+}
+
+function formatPlanSummary(
+  plan: DashboardPlanSummary,
+  options: { includeSuggestedCommand?: boolean; includeRoutingExclusion?: boolean } = {},
+): string[] {
+  const lines = [
+    `- ${plan.title}`,
+    `  Branch: ${plan.branchName}`,
+    `  Progress: ${plan.commitUnits.completed}/${plan.commitUnits.total} completed`,
+    `  Next: ${formatNextCommitUnit(plan.commitUnits.next)}`,
+    `  Queued requests: ${formatCount(plan.queuedRequestCount, "request")}`,
+  ];
+
+  if (options.includeSuggestedCommand) {
+    lines.push(`  Suggested command: ${formatSuggestedCommand(plan)}`);
+  }
+
+  if (options.includeRoutingExclusion && plan.routingExclusionReason) {
+    lines.push(`  Routing: ${plan.routingExclusionReason}`);
+  }
+
+  return lines;
 }
 
 function formatLogEntry(entry: DashboardLogEntry): string {

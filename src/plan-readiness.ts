@@ -1,4 +1,4 @@
-import { completedCommitUnitNumbers, parseCommitUnits } from "./implementer";
+import { completedCommitUnitNumbers, parseCommitUnits } from "./plan-status";
 
 export type PlanReadiness =
   | { ready: true }

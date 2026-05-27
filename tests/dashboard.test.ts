@@ -88,6 +88,37 @@ test("readDashboardSnapshot summarizes plans, queues, PR lock, and git status", 
       ].join("\n"),
       "utf8",
     );
+    const completePlanDir = path.join(root, ".crack", "plans", "done");
+    await mkdir(completePlanDir, { recursive: true });
+    await writeFile(
+      path.join(completePlanDir, "plan.md"),
+      [
+        "# Plan: Done Dashboard",
+        "",
+        "Branch: codex/done",
+        "",
+        "## Commit Units",
+        "",
+        "### Commit 1: Finish dashboard",
+        "",
+        "Finish it.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(path.join(completePlanDir, "queue.md"), "# Queue\n\n", "utf8");
+    await writeFile(
+      path.join(completePlanDir, "log.md"),
+      [
+        "# Log",
+        "",
+        "## 2026-05-09 12:30",
+        "",
+        "- Completed commit unit 1.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
 
     const snapshot = await readDashboardSnapshot(state, {
       gitStatusReader: new StubGitStatusReader(parseGitStatus([
@@ -105,10 +136,13 @@ test("readDashboardSnapshot summarizes plans, queues, PR lock, and git status", 
     assert.equal(snapshot.prLock?.prUrl, "https://github.com/example/repo/pull/7");
     assert.equal(snapshot.prLock?.status, "reviewing");
 
-    assert.equal(snapshot.plans.length, 1);
-    const plan = snapshot.plans[0];
+    assert.equal(snapshot.plans.length, 2);
+    assert.equal(snapshot.activePlans.length, 1);
+    assert.equal(snapshot.completePlans.length, 1);
+    const plan = snapshot.activePlans[0];
     assert.equal(plan.title, "Demo Dashboard");
     assert.equal(plan.branchName, "codex/demo");
+    assert.equal(plan.status, "active");
     assert.equal(plan.relativePlanPath, ".crack/plans/demo/plan.md");
     assert.deepEqual(plan.commitUnits, {
       total: 3,
@@ -125,6 +159,10 @@ test("readDashboardSnapshot summarizes plans, queues, PR lock, and git status", 
       plan.nextCommands.find((command) => command.kind === "run-all")?.command,
       "crack run-all --plan .crack/plans/demo/plan.md",
     );
+    assert.equal(snapshot.completePlans[0].title, "Done Dashboard");
+    assert.equal(snapshot.completePlans[0].status, "complete");
+    assert.equal(snapshot.completePlans[0].nextCommands.length, 0);
+    assert.match(snapshot.completePlans[0].routingExclusionReason ?? "", /excluded from default existing-plan routing/);
 
     assert.equal(snapshot.git.isDirty, true);
     assert.equal(snapshot.git.changedFileCount, 3);
@@ -146,6 +184,8 @@ test("readDashboardSnapshot does not initialize missing crack state", async () =
     assert.equal(snapshot.inbox.count, 0);
     assert.equal(snapshot.prLock, null);
     assert.deepEqual(snapshot.plans, []);
+    assert.deepEqual(snapshot.activePlans, []);
+    assert.deepEqual(snapshot.completePlans, []);
     assert.equal(existsSync(state.crackDir), false);
   });
 });
@@ -158,12 +198,15 @@ test("renderDashboard renders a compact summary with suggested run-all command",
   assert.match(output, /PR lock: active - branch codex\/demo, status reviewing, https:\/\/github\.com\/example\/repo\/pull\/7/);
   assert.match(output, /Inbox: 2 requests/);
   assert.match(output, /Dirty files: 3 \(staged 1, unstaged 1, untracked 1\)/);
-  assert.match(output, /Plans:/);
+  assert.match(output, /Active plans:/);
   assert.match(output, /- Demo Dashboard/);
   assert.match(output, /Progress: 1\/3 completed/);
   assert.match(output, /Next: Commit 2 - Render dashboard/);
   assert.match(output, /Queued requests: 1 request/);
   assert.match(output, /Suggested command: crack run-all --plan \.crack\/plans\/demo\/plan\.md/);
+  assert.match(output, /Complete plans:/);
+  assert.match(output, /- Done Dashboard/);
+  assert.match(output, /Routing: Plan is complete, so it is excluded from default existing-plan routing\./);
   assert.match(output, /Recent activity:/);
   assert.match(output, /\[2026-05-09 12:20\] Completed commit unit 1\./);
   assert.doesNotMatch(output, /\u001b\[/);
@@ -250,6 +293,80 @@ class StubGitStatusReader implements GitStatusReader {
 }
 
 function sampleDashboardSnapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot {
+  const plans = overrides.plans ?? [
+    {
+      directory: "/repo/demo/.crack/plans/demo",
+      planPath: "/repo/demo/.crack/plans/demo/plan.md",
+      queuePath: "/repo/demo/.crack/plans/demo/queue.md",
+      logPath: "/repo/demo/.crack/plans/demo/log.md",
+      relativeDirectory: ".crack/plans/demo",
+      relativePlanPath: ".crack/plans/demo/plan.md",
+      branchName: "codex/demo",
+      title: "Demo Dashboard",
+      status: "active",
+      statusReason: "Commit units not complete: 2, 3.",
+      commitUnits: {
+        total: 3,
+        completed: 1,
+        remaining: 2,
+        completedNumbers: [1],
+        next: {
+          number: 2,
+          title: "Render dashboard",
+        },
+      },
+      queuedRequestCount: 1,
+      recentLogEntries: [
+        {
+          loggedAt: "2026-05-09 12:15",
+          text: "Started commit unit 1.",
+        },
+        {
+          loggedAt: "2026-05-09 12:20",
+          text: "Completed commit unit 1.",
+        },
+      ],
+      nextCommands: [
+        {
+          kind: "run-next",
+          command: "crack run-next --plan .crack/plans/demo/plan.md",
+        },
+        {
+          kind: "run-all",
+          command: "crack run-all --plan .crack/plans/demo/plan.md",
+        },
+      ],
+    },
+    {
+      directory: "/repo/demo/.crack/plans/done",
+      planPath: "/repo/demo/.crack/plans/done/plan.md",
+      queuePath: "/repo/demo/.crack/plans/done/queue.md",
+      logPath: "/repo/demo/.crack/plans/done/log.md",
+      relativeDirectory: ".crack/plans/done",
+      relativePlanPath: ".crack/plans/done/plan.md",
+      branchName: "codex/done",
+      title: "Done Dashboard",
+      status: "complete",
+      statusReason: "All commit units are completed according to log.md.",
+      routingExclusionReason: "Plan is complete, so it is excluded from default existing-plan routing.",
+      commitUnits: {
+        total: 1,
+        completed: 1,
+        remaining: 0,
+        completedNumbers: [1],
+        next: null,
+      },
+      queuedRequestCount: 0,
+      recentLogEntries: [
+        {
+          loggedAt: "2026-05-09 12:30",
+          text: "Completed commit unit 1.",
+        },
+      ],
+      nextCommands: [],
+    },
+  ] satisfies DashboardSnapshot["plans"];
+
   return {
     repoRoot: "/repo/demo",
     crackDir: "/repo/demo/.crack",
@@ -267,49 +384,6 @@ function sampleDashboardSnapshot(overrides: Partial<DashboardSnapshot> = {}): Da
       prUrl: "https://github.com/example/repo/pull/7",
       status: "reviewing",
     },
-    plans: [
-      {
-        directory: "/repo/demo/.crack/plans/demo",
-        planPath: "/repo/demo/.crack/plans/demo/plan.md",
-        queuePath: "/repo/demo/.crack/plans/demo/queue.md",
-        logPath: "/repo/demo/.crack/plans/demo/log.md",
-        relativeDirectory: ".crack/plans/demo",
-        relativePlanPath: ".crack/plans/demo/plan.md",
-        branchName: "codex/demo",
-        title: "Demo Dashboard",
-        commitUnits: {
-          total: 3,
-          completed: 1,
-          remaining: 2,
-          completedNumbers: [1],
-          next: {
-            number: 2,
-            title: "Render dashboard",
-          },
-        },
-        queuedRequestCount: 1,
-        recentLogEntries: [
-          {
-            loggedAt: "2026-05-09 12:15",
-            text: "Started commit unit 1.",
-          },
-          {
-            loggedAt: "2026-05-09 12:20",
-            text: "Completed commit unit 1.",
-          },
-        ],
-        nextCommands: [
-          {
-            kind: "run-next",
-            command: "crack run-next --plan .crack/plans/demo/plan.md",
-          },
-          {
-            kind: "run-all",
-            command: "crack run-all --plan .crack/plans/demo/plan.md",
-          },
-        ],
-      },
-    ],
     git: {
       raw: "",
       entries: [],
@@ -320,5 +394,8 @@ function sampleDashboardSnapshot(overrides: Partial<DashboardSnapshot> = {}): Da
       untrackedFileCount: 1,
     },
     ...overrides,
+    plans,
+    activePlans: overrides.activePlans ?? plans.filter((plan) => plan.status === "active"),
+    completePlans: overrides.completePlans ?? plans.filter((plan) => plan.status === "complete"),
   };
 }

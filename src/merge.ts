@@ -773,16 +773,16 @@ export class MergeRunner {
       return readSelectedPlan(paths);
     }
 
-    const activePlans = await this.state.listActivePlans();
-    if (activePlans.length === 0) {
-      throw new Error("No active plans found");
+    const planRecords = await this.state.listPlanRecords();
+    if (planRecords.length === 0) {
+      throw new Error("No plans found");
     }
 
-    if (activePlans.length > 1) {
-      throw new Error("Multiple active plans found; pass --plan <path>");
+    if (planRecords.length > 1) {
+      throw new Error("Multiple plans found; pass --plan <path>");
     }
 
-    return readSelectedPlan(activePlans[0]);
+    return readSelectedPlan(planRecords[0]);
   }
 }
 

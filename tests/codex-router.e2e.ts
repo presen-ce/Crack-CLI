@@ -29,7 +29,9 @@ test(
           "",
           "While this file exists, new requests are appended to inbox.md.",
         ].join("\n"),
+        routablePlans: [],
         activePlans: [],
+        planDiagnostics: [],
       });
 
       assert.equal(decision.action, "pause_for_pr_review");

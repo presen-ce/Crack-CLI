@@ -4,13 +4,24 @@ import path from "node:path";
 
 import { withCodexCliDefaults } from "./codex-cli";
 import { runProcess } from "./process";
-import type { ActivePlan } from "./state";
+import type { PlanStatus } from "./plan-status";
+import type { ActivePlan, PlanRecord } from "./state";
+
+export type RouterPlanDiagnostic = {
+  planPath: string;
+  branchName: string;
+  status: PlanStatus;
+  reason: string;
+};
 
 export type RouterAgentInput = {
   repoRoot: string;
   prompt: string;
   prLock: string | null;
+  routablePlans?: PlanRecord[];
+  /** @deprecated Use routablePlans. */
   activePlans: ActivePlan[];
+  planDiagnostics?: RouterPlanDiagnostic[];
 };
 
 export type RouterAgentDecision =
@@ -129,13 +140,16 @@ export function parseRouteDecision(text: string): RouterAgentDecision {
 }
 
 export function buildRouterPrompt(input: RouterAgentInput): string {
+  const candidatePlans = input.routablePlans ?? input.activePlans;
+  const planDiagnostics = input.planDiagnostics ?? [];
+
   return [
     "You are Agent 0: Router for the Codex workflow orchestrator.",
     "Decide where the new user request should go. Do not edit files.",
     "",
     "Routing rules:",
     "- If a PR lock is active, pause new planning.",
-    "- If the request strongly depends on an active plan, route it to that plan.",
+    "- If the request strongly depends on an active incomplete plan candidate, route it to that plan.",
     "- Otherwise create a new plan.",
     "",
     "Return exactly one line in one of these forms:",
@@ -149,9 +163,14 @@ export function buildRouterPrompt(input: RouterAgentInput): string {
     "PR lock:",
     input.prLock?.trim() ? fence(input.prLock) : "None",
     "",
-    "Active plans:",
-    input.activePlans.length > 0
-      ? input.activePlans.map((plan) => formatActivePlan(input.repoRoot, plan)).join("\n\n")
+    "Active incomplete plan candidates:",
+    candidatePlans.length > 0
+      ? candidatePlans.map((plan) => formatPlanCandidate(input.repoRoot, plan)).join("\n\n")
+      : "None",
+    "",
+    "Plan routing diagnostics:",
+    planDiagnostics.length > 0
+      ? planDiagnostics.map(formatPlanDiagnostic).join("\n")
       : "None",
   ].join("\n");
 }
@@ -181,10 +200,20 @@ function parseKeyValues(text: string): Map<string, string> {
   return values;
 }
 
-function formatActivePlan(repoRoot: string, plan: ActivePlan): string {
+function formatPlanCandidate(repoRoot: string, plan: ActivePlan | PlanRecord): string {
+  const record = isPlanRecord(plan) ? plan : null;
+  const next = record?.statusSummary.progress.next;
+
   return [
     `Path: ${relativePath(repoRoot, plan.plan)}`,
     `Branch: ${plan.branchName}`,
+    ...(record
+      ? [
+          `Status: ${record.status}`,
+          `Progress: ${record.statusSummary.progress.completed}/${record.statusSummary.progress.total} completed`,
+          `Next: ${next ? `Commit ${next.number} - ${next.title}` : "none"}`,
+        ]
+      : []),
     "",
     "plan.md:",
     fence(plan.planContent),
@@ -192,6 +221,19 @@ function formatActivePlan(repoRoot: string, plan: ActivePlan): string {
     "queue.md:",
     plan.queueContent.trim() ? fence(plan.queueContent) : "None",
   ].join("\n");
+}
+
+function isPlanRecord(plan: ActivePlan | PlanRecord): plan is PlanRecord {
+  return "statusSummary" in plan;
+}
+
+function formatPlanDiagnostic(diagnostic: RouterPlanDiagnostic): string {
+  return [
+    `- ${diagnostic.planPath}`,
+    `branch=${diagnostic.branchName}`,
+    `status=${diagnostic.status}`,
+    `reason=${diagnostic.reason}`,
+  ].join(" ");
 }
 
 function fence(value: string): string {

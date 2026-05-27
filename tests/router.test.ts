@@ -8,7 +8,7 @@ import type { BranchManager } from "../src/git";
 import type { PlannerAgent, PlannerAgentInput, PlannerAgentResult } from "../src/planner-agent";
 import { parsePlanWritten } from "../src/planner-agent";
 import { Router } from "../src/router";
-import { parseRouteDecision } from "../src/router-agent";
+import { buildRouterPrompt, parseRouteDecision } from "../src/router-agent";
 import type { RouterAgent, RouterAgentDecision, RouterAgentInput } from "../src/router-agent";
 import { MarkdownState } from "../src/state";
 
@@ -98,7 +98,7 @@ test("route appends to an existing plan queue when selected", async () => {
   });
 });
 
-test("route asks the router agent when active plans exist", async () => {
+test("route asks the router agent when active incomplete plans exist", async () => {
   await withRepo(async (root) => {
     const state = new MarkdownState(root);
     const plan = await state.createPlan({
@@ -108,6 +108,7 @@ test("route asks the router agent when active plans exist", async () => {
       reason: "test setup",
       receivedAt: "2026-05-09 12:00",
     });
+    await writePlanFile(plan.plan, "codex/current", "Current");
     const agent = new StubRouterAgent({
       action: "existing_plan",
       planPath: plan.plan,
@@ -120,9 +121,150 @@ test("route asks the router agent when active plans exist", async () => {
 
     assert.equal(decision.action, "route_to_existing_plan");
     assert.equal(agent.inputs.length, 1);
-    assert.equal(agent.inputs[0].activePlans.length, 1);
-    assert.match(agent.inputs[0].activePlans[0].planContent, /Branch: codex\/current/);
+    assert.equal(agent.inputs[0].routablePlans?.length, 1);
+    assert.equal(agent.inputs[0].activePlans?.length, 1);
+    assert.match(agent.inputs[0].routablePlans?.[0]?.planContent ?? "", /Branch: codex\/current/);
     assert.match(await readFile(plan.queue, "utf8"), /> Add dependent follow-up/);
+  });
+});
+
+test("route only passes active incomplete plans to the router agent", async () => {
+  await withRepo(async (root) => {
+    const state = new MarkdownState(root);
+    const activePlan = await state.createPlan({
+      branchName: "codex/current",
+      planTitle: "Current",
+      prompt: "Initial request",
+      reason: "test setup",
+      receivedAt: "2026-05-09 12:00",
+    });
+    await writePlanFile(activePlan.plan, "codex/current", "Current");
+    await writeFile(activePlan.log, "# Log\n\n- Completed commit unit 1.\n", "utf8");
+
+    const completePlan = await state.createPlan({
+      branchName: "codex/done",
+      planTitle: "Done",
+      prompt: "Completed request",
+      reason: "test setup",
+      receivedAt: "2026-05-09 12:00",
+    });
+    await writePlanFile(completePlan.plan, "codex/done", "Done");
+    await writeFile(
+      completePlan.log,
+      "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n",
+      "utf8",
+    );
+
+    const agent = new StubRouterAgent({
+      action: "existing_plan",
+      planPath: activePlan.plan,
+      reason: "Depends on current plan.",
+    });
+
+    const decision = await new Router(state, agent).route("Add dependent follow-up", {
+      receivedAt: "2026-05-09 12:05",
+    });
+
+    assert.equal(decision.action, "route_to_existing_plan");
+    assert.equal(agent.inputs.length, 1);
+    assert.deepEqual(
+      (agent.inputs[0].routablePlans ?? []).map((plan) => plan.branchName),
+      ["codex/current"],
+    );
+    assert.deepEqual(
+      (agent.inputs[0].planDiagnostics ?? []).map((diagnostic) => ({
+        planPath: diagnostic.planPath,
+        branchName: diagnostic.branchName,
+        status: diagnostic.status,
+      })),
+      [
+        {
+          planPath: ".crack/plans/codex-done/plan.md",
+          branchName: "codex/done",
+          status: "complete",
+        },
+      ],
+    );
+    assert.match(agent.inputs[0].planDiagnostics?.[0]?.reason ?? "", /excluded from default existing-plan routing/);
+    assert.match(await readFile(activePlan.queue, "utf8"), /> Add dependent follow-up/);
+    assert.doesNotMatch(await readFile(completePlan.queue, "utf8"), /> Add dependent follow-up/);
+  });
+});
+
+test("route creates a new plan when existing plans are complete", async () => {
+  await withRepo(async (root) => {
+    const state = new MarkdownState(root);
+    const planner = new StubPlannerAgent();
+    const branches = new StubBranchManager();
+    const completePlan = await state.createPlan({
+      branchName: "codex/done",
+      planTitle: "Done",
+      prompt: "Completed request",
+      reason: "test setup",
+      receivedAt: "2026-05-09 12:00",
+    });
+    await writePlanFile(completePlan.plan, "codex/done", "Done");
+    await writeFile(
+      completePlan.log,
+      "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n",
+      "utf8",
+    );
+
+    const decision = await new Router(state, new UnusedRouterAgent(), planner, branches).route("Add fresh work", {
+      receivedAt: "2026-05-09 12:05",
+    });
+
+    assert.equal(decision.action, "create_new_plan");
+    assert.deepEqual(branches.preparedBranches, ["codex/add-fresh-work"]);
+    assert.equal(planner.inputs.length, 1);
+  });
+});
+
+test("route rejects router agent decisions targeting non-routable plans", async () => {
+  await withRepo(async (root) => {
+    const state = new MarkdownState(root);
+    const planner = new StubPlannerAgent();
+    const branches = new StubBranchManager();
+    const activePlan = await state.createPlan({
+      branchName: "codex/current",
+      planTitle: "Current",
+      prompt: "Initial request",
+      reason: "test setup",
+      receivedAt: "2026-05-09 12:00",
+    });
+    await writePlanFile(activePlan.plan, "codex/current", "Current");
+    await writeFile(activePlan.log, "# Log\n\n- Completed commit unit 1.\n", "utf8");
+
+    const completePlan = await state.createPlan({
+      branchName: "codex/done",
+      planTitle: "Done",
+      prompt: "Completed request",
+      reason: "test setup",
+      receivedAt: "2026-05-09 12:00",
+    });
+    await writePlanFile(completePlan.plan, "codex/done", "Done");
+    await writeFile(
+      completePlan.log,
+      "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n",
+      "utf8",
+    );
+
+    const agent = new StubRouterAgent({
+      action: "existing_plan",
+      planPath: completePlan.plan,
+      reason: "The follow-up mentions completed work.",
+    });
+
+    const decision = await new Router(state, agent, planner, branches).route("Add dependent follow-up", {
+      receivedAt: "2026-05-09 12:05",
+    });
+
+    assert.equal(decision.action, "create_new_plan");
+    assert.match(decision.reason, /Router selected non-routable plan/);
+    assert.deepEqual(branches.preparedBranches, ["codex/add-dependent-follow-up"]);
+    assert.equal(planner.inputs.length, 1);
+    assert.doesNotMatch(await readFile(activePlan.queue, "utf8"), /> Add dependent follow-up/);
+    assert.doesNotMatch(await readFile(completePlan.queue, "utf8"), /> Add dependent follow-up/);
   });
 });
 
@@ -131,13 +273,14 @@ test("route creates a new plan from the router agent decision", async () => {
     const state = new MarkdownState(root);
     const planner = new StubPlannerAgent();
     const branches = new StubBranchManager();
-    await state.createPlan({
+    const plan = await state.createPlan({
       branchName: "codex/current",
       planTitle: "Current",
       prompt: "Initial request",
       reason: "test setup",
       receivedAt: "2026-05-09 12:00",
     });
+    await writePlanFile(plan.plan, "codex/current", "Current");
     const agent = new StubRouterAgent({
       action: "new_plan",
       branchName: "codex/separate",
@@ -179,6 +322,29 @@ test("parseRouteDecision reads router final response lines", () => {
   );
 });
 
+test("buildRouterPrompt accepts legacy activePlans input", () => {
+  const prompt = buildRouterPrompt({
+    repoRoot: "/repo/demo",
+    prompt: "Follow up",
+    prLock: null,
+    activePlans: [
+      {
+        directory: "/repo/demo/.crack/plans/demo",
+        plan: "/repo/demo/.crack/plans/demo/plan.md",
+        queue: "/repo/demo/.crack/plans/demo/queue.md",
+        log: "/repo/demo/.crack/plans/demo/log.md",
+        branchName: "codex/demo",
+        planContent: "# Plan: Demo\n\nBranch: codex/demo\n",
+        queueContent: "# Queue\n\n",
+      },
+    ],
+  });
+
+  assert.match(prompt, /Active incomplete plan candidates:/);
+  assert.match(prompt, /Path: \.crack\/plans\/demo\/plan\.md/);
+  assert.match(prompt, /Branch: codex\/demo/);
+});
+
 test("parsePlanWritten reads planner final response lines", () => {
   assert.equal(
     parsePlanWritten('notes\nPLAN_WRITTEN path=".crack/plans/demo/plan.md"'),
@@ -195,6 +361,29 @@ async function withRepo(run: (root: string) => Promise<void>): Promise<void> {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function writePlanFile(planPath: string, branchName: string, title: string): Promise<void> {
+  await writeFile(
+    planPath,
+    [
+      `# Plan: ${title}`,
+      "",
+      `Branch: ${branchName}`,
+      "",
+      "## Commit Units",
+      "",
+      "### Commit 1: Add model",
+      "",
+      "Create the model.",
+      "",
+      "### Commit 2: Wire command",
+      "",
+      "Add the command.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
 }
 
 class StubRouterAgent implements RouterAgent {

@@ -6,14 +6,17 @@ import { changedPathsSince, dirtyPaths, GitCliBranchManager, GitCliCommitter } f
 import type { BranchManager, Committer } from "./git";
 import { CodexImplementerAgent } from "./implementer-agent";
 import type { ImplementerAgent } from "./implementer-agent";
+import { selectNextCommitUnit } from "./plan-status";
+import type { CommitUnit } from "./plan-status";
 import { MarkdownState } from "./state";
 import type { PlanPaths } from "./state";
 
-export type CommitUnit = {
-  number: number;
-  title: string;
-  content: string;
-};
+export {
+  completedCommitUnitNumbers,
+  parseCommitUnits,
+  selectNextCommitUnit,
+} from "./plan-status";
+export type { CommitUnit } from "./plan-status";
 
 export type RunNextOptions = {
   planPath?: string;
@@ -192,59 +195,17 @@ export class ImplementerRunner {
       return readSelectedPlan(paths);
     }
 
-    const activePlans = await this.state.listActivePlans();
-    if (activePlans.length === 0) {
-      throw new Error("No active plans found");
+    const routablePlans = await this.state.listRoutablePlans();
+    if (routablePlans.length === 0) {
+      throw new Error("No active incomplete plans found");
     }
 
-    if (activePlans.length > 1) {
-      throw new Error("Multiple active plans found; pass --plan <path>");
+    if (routablePlans.length > 1) {
+      throw new Error("Multiple active incomplete plans found; pass --plan <path>");
     }
 
-    return readSelectedPlan(activePlans[0]);
+    return readSelectedPlan(routablePlans[0]);
   }
-}
-
-export function parseCommitUnits(planContent: string): CommitUnit[] {
-  const lines = planContent.split(/\r?\n/);
-  const starts: Array<{ index: number; number: number; title: string }> = [];
-
-  lines.forEach((line, index) => {
-    const match = line.match(/^###\s+Commit\s+(\d+)\s*:?\s*(.*?)\s*$/i);
-    if (!match) {
-      return;
-    }
-
-    starts.push({
-      index,
-      number: Number.parseInt(match[1], 10),
-      title: match[2]?.trim() || `Commit unit ${match[1]}`,
-    });
-  });
-
-  return starts.map((start, index) => {
-    const nextStart = starts[index + 1]?.index ?? lines.length;
-    return {
-      number: start.number,
-      title: start.title,
-      content: lines.slice(start.index, nextStart).join("\n").trim(),
-    };
-  });
-}
-
-export function completedCommitUnitNumbers(logContent: string): Set<number> {
-  const completed = new Set<number>();
-
-  for (const match of logContent.matchAll(/Completed commit unit\s+(\d+)\b/gi)) {
-    completed.add(Number.parseInt(match[1], 10));
-  }
-
-  return completed;
-}
-
-export function selectNextCommitUnit(planContent: string, logContent: string): CommitUnit | undefined {
-  const completed = completedCommitUnitNumbers(logContent);
-  return parseCommitUnits(planContent).find((unit) => !completed.has(unit.number));
 }
 
 function branchNameFromPlan(content: string): string | undefined {

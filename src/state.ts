@@ -2,6 +2,9 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { summarizePlanStatus } from "./plan-status";
+import type { PlanStatus, PlanStatusSummary } from "./plan-status";
+
 export type PlanPaths = {
   directory: string;
   plan: string;
@@ -13,6 +16,12 @@ export type ActivePlan = PlanPaths & {
   branchName: string;
   planContent: string;
   queueContent: string;
+};
+
+export type PlanRecord = ActivePlan & {
+  logContent: string;
+  status: PlanStatus;
+  statusSummary: PlanStatusSummary;
 };
 
 export type QueuedRequest = {
@@ -131,11 +140,15 @@ export class MarkdownState {
     };
   }
 
-  async listActivePlans(): Promise<ActivePlan[]> {
-    await this.initialize();
+  async listPlanRecords(options: { initialize?: boolean } = {}): Promise<PlanRecord[]> {
+    if (options.initialize ?? true) {
+      await this.initialize();
+    } else if (!existsSync(this.plansDir)) {
+      return [];
+    }
 
     const entries = await readdir(this.plansDir, { withFileTypes: true });
-    const plans: ActivePlan[] = [];
+    const plans: PlanRecord[] = [];
 
     for (const entry of entries) {
       if (!entry.isDirectory()) {
@@ -153,6 +166,8 @@ export class MarkdownState {
       const log = path.join(directory, "log.md");
       const planContent = await readFile(plan, "utf8");
       const queueContent = existsSync(queue) ? await readFile(queue, "utf8") : "";
+      const logContent = existsSync(log) ? await readFile(log, "utf8") : "";
+      const statusSummary = summarizePlanStatus(planContent, logContent);
 
       plans.push({
         directory,
@@ -162,10 +177,23 @@ export class MarkdownState {
         branchName: branchNameFromPlan(planContent) ?? entry.name,
         planContent,
         queueContent,
+        logContent,
+        status: statusSummary.status,
+        statusSummary,
       });
     }
 
     return plans.sort((left, right) => left.directory.localeCompare(right.directory));
+  }
+
+  async listRoutablePlans(options: { initialize?: boolean } = {}): Promise<PlanRecord[]> {
+    const plans = await this.listPlanRecords(options);
+    return plans.filter((plan) => plan.statusSummary.routing.routeToExistingPlanCandidate);
+  }
+
+  /** @deprecated Use listRoutablePlans for routing candidates or listPlanRecords for all plans. */
+  async listActivePlans(): Promise<ActivePlan[]> {
+    return this.listRoutablePlans();
   }
 
   async appendInbox(prompt: string, reason: string, receivedAt = timestamp()): Promise<string> {

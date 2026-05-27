@@ -3,8 +3,10 @@ import type { BranchManager } from "./git";
 import { CodexPlannerAgent } from "./planner-agent";
 import type { PlannerAgent } from "./planner-agent";
 import { CodexRouterAgent } from "./router-agent";
+import type { RouterPlanDiagnostic } from "./router-agent";
 import type { RouterAgent, RouterAgentDecision } from "./router-agent";
 import { MarkdownState, slugify, titleFromPrompt } from "./state";
+import type { PlanRecord } from "./state";
 
 export type RouteAction = "pause_for_pr_review" | "route_to_existing_plan" | "create_new_plan";
 
@@ -51,29 +53,32 @@ export class Router {
     }
 
     if (options.planPath) {
-      const reason = options.reason ?? "Caller selected an existing active plan.";
+      const reason = options.reason ?? "Caller selected an existing plan.";
       const target = await this.state.appendQueue(options.planPath, prompt, reason, options.receivedAt);
       return { action: "route_to_existing_plan", target, reason };
     }
 
     if (!options.branchName && !options.planTitle) {
-      const activePlans = await this.state.listActivePlans();
+      const planRecords = await this.state.listPlanRecords();
+      const routablePlans = planRecords.filter((plan) => plan.statusSummary.routing.routeToExistingPlanCandidate);
 
-      if (activePlans.length > 0) {
+      if (routablePlans.length > 0) {
         const decision = await this.agent.decide({
           repoRoot: this.state.repoRoot,
           prompt,
           prLock,
-          activePlans,
+          routablePlans,
+          activePlans: routablePlans,
+          planDiagnostics: routingDiagnostics(this.state.repoRoot, planRecords, routablePlans),
         });
 
-        return this.applyAgentDecision(prompt, decision, options.receivedAt);
+        return this.applyAgentDecision(prompt, decision, options.receivedAt, routablePlans);
       }
     }
 
     const title = options.planTitle ?? titleFromPrompt(prompt);
     const branchName = options.branchName ?? `codex/${slugify(title).toLowerCase()}`;
-    const reason = options.reason ?? "No PR lock or selected active plan; created a new plan.";
+    const reason = options.reason ?? "No PR lock or selected existing plan candidate; created a new plan.";
     const paths = await this.createNewPlan({
       branchName,
       planTitle: title,
@@ -89,6 +94,7 @@ export class Router {
     prompt: string,
     decision: RouterAgentDecision,
     receivedAt: string | undefined,
+    routablePlans: PlanRecord[] = [],
   ): Promise<RouteDecision> {
     if (decision.action === "pause_for_pr_review") {
       const target = await this.state.appendInbox(prompt, decision.reason, receivedAt);
@@ -96,6 +102,24 @@ export class Router {
     }
 
     if (decision.action === "existing_plan") {
+      if (!isRoutablePlanPath(this.state, decision.planPath, routablePlans)) {
+        const title = titleFromPrompt(prompt);
+        const branchName = `codex/${slugify(title).toLowerCase()}`;
+        const reason = [
+          `Router selected non-routable plan \`${decision.planPath}\`; created a new plan instead.`,
+          decision.reason,
+        ].join(" ");
+        const planPath = await this.createNewPlan({
+          branchName,
+          planTitle: title,
+          prompt,
+          reason,
+          receivedAt,
+        });
+
+        return { action: "create_new_plan", target: planPath, reason };
+      }
+
       const target = await this.state.appendQueue(decision.planPath, prompt, decision.reason, receivedAt);
       return { action: "route_to_existing_plan", target, reason: decision.reason };
     }
@@ -150,4 +174,26 @@ function relativePath(repoRoot: string, filePath: string): string {
   return filePath.startsWith(repoRoot)
     ? filePath.slice(repoRoot.length + 1).split(/[\\/]/).join("/")
     : filePath;
+}
+
+function routingDiagnostics(
+  repoRoot: string,
+  planRecords: PlanRecord[],
+  routablePlans: PlanRecord[],
+): RouterPlanDiagnostic[] {
+  const routableDirectories = new Set(routablePlans.map((plan) => plan.directory));
+
+  return planRecords
+    .filter((plan) => !routableDirectories.has(plan.directory))
+    .map((plan) => ({
+      planPath: relativePath(repoRoot, plan.plan),
+      branchName: plan.branchName,
+      status: plan.status,
+      reason: plan.statusSummary.routing.exclusionReason ?? plan.statusSummary.reason,
+    }));
+}
+
+function isRoutablePlanPath(state: MarkdownState, planPath: string, routablePlans: PlanRecord[]): boolean {
+  const selected = state.existingPlanPaths(planPath);
+  return routablePlans.some((plan) => plan.directory === selected.directory);
 }

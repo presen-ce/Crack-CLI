@@ -34,7 +34,9 @@ Crack uses `.crack/` as the source of truth:
       log.md
 ```
 
-`plan.md` contains readable commit units named like `### Commit 1: ...`. `log.md` records completed units using `Completed commit unit N`. `queue.md` holds follow-up requests for that plan. `inbox.md` holds requests paused by an active PR lock.
+`plan.md` contains readable commit units named like `### Commit 1: ...`. `log.md` records completed units using `Completed commit unit N`. Crack compares those two files to classify each plan as `active` when commit units remain incomplete, or `complete` when all commit units are completed. `queue.md` holds follow-up requests for that plan. `inbox.md` holds requests paused by an active PR lock.
+
+Complete plans stay visible in `crack dashboard`, but they are not default `route_to_existing_plan` candidates. Router context should contain active incomplete plans as candidates; completed plans may appear only as conservative diagnostics such as "excluded from routing because complete." Do not treat this as dependency scheduling or automatic parallelization.
 
 ## Core Workflow
 
@@ -50,7 +52,7 @@ Crack uses `.crack/` as the source of truth:
    crack submit "..."
    ```
 
-   If a PR lock exists, the request goes to `.crack/inbox.md`. If `--plan <path>` is provided, the request goes to that plan's `queue.md`. Otherwise Crack routes to an active plan or creates a new plan and branch.
+   If a PR lock exists, the request goes to `.crack/inbox.md`. If `--plan <path>` is provided, the request goes to that plan's `queue.md`. Otherwise Crack routes to an active incomplete plan or creates a new plan and branch.
 
 3. When submitting multiple requests, submit them sequentially:
 
@@ -116,9 +118,9 @@ All commands accept `--root <path>`.
 
 ## Operating Rules
 
-- Use `--plan` whenever more than one active plan exists.
+- Use `--plan` whenever more than one active incomplete plan exists.
 - For multiple new requests, never submit or route them concurrently. Submit one request, let Crack finish creating or queuing the plan, then inspect `crack dashboard` before submitting the next request.
-- Treat `submit` and `route` as state-mutating operations. They must be serialized so Router decisions are based on the latest active plans and queues.
+- Treat `submit` and `route` as state-mutating operations. They must be serialized so Router decisions are based on the latest active incomplete plans and queues.
 - Do not run multiple `run-all` commands in the same worktree at the same time. Current local execution shares one checkout and one `.git/index`; parallel runs can race on `git switch`, `git add`, and branch state. Run them one at a time unless the workflow has explicit per-plan worktree isolation.
 - Do not use `--remote` unless the user wants a pushed branch, PR, or remote merge.
 - If `run-next`, `run-all`, or `merge` reports `needs_work`, stop and report the reason. Do not keep retrying blindly.
